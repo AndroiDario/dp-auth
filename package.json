@@ -1,0 +1,44 @@
+{
+  "name": "dp-auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Login con passkey e codice via email per i servizi dariopagnoni.it: Hono + Cloudflare D1.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./client/auth.js",
+    "./migrations/*": "./migrations/*"
+  },
+  "files": [
+    "src",
+    "client",
+    "migrations",
+    "bin",
+    "scripts",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "build:client": "node scripts/embed-client.mjs"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "14.0.3",
+    "hono": "4.13.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261005.1",
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3",
+    "vitest": "4.0.15"
+  },
+  "bin": {
+    "dp-auth-member": "./bin/member.mjs",
+    "dp-auth-link": "./bin/user-link.mjs",
+    "dp-auth-code": "./bin/local-code.mjs"
+  }
+}
