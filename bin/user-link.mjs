@@ -8,8 +8,9 @@ const args = process.argv.slice(2), local = args.includes('--local'), print = ar
 const email = requireEmail(args.find(a => !a.startsWith('--')));
 const token = randomBytes(32).toString('base64url'), id = createHash('sha256').update(token).digest('hex');
 const expires = new Date(Date.now() + 15 * 60000);
-const result = sql(`DELETE FROM auth_challenges WHERE kind='link' AND email=${quote(email)}; INSERT INTO auth_challenges (id,kind,email,secret,attempts,expires_at) SELECT ${quote(id)},'link',email,'',0,${quote(expires.toISOString())} FROM users WHERE email=${quote(email)};`, local);
-if (result.at(-1)?.meta?.changes !== 1) fail('Account inesistente. Aggiungi prima l’indirizzo con npx dp-auth-member.');
+const result = sql(`DELETE FROM auth_challenges WHERE kind='link' AND email=${quote(email)}; INSERT INTO auth_challenges (id,kind,email,secret,attempts,expires_at) SELECT ${quote(id)},'link',email,'',0,${quote(expires.toISOString())} FROM users WHERE email=${quote(email)}; SELECT COUNT(*) AS n FROM auth_challenges WHERE id=${quote(id)};`, local);
+// Si rilegge la riga inserita: `meta.changes` non arriva da tutte le versioni di wrangler (in locale manca).
+if (result.at(-1)?.results?.[0]?.n !== 1) fail('Account inesistente. Aggiungi prima l’indirizzo con npx dp-auth-member.');
 const config = wranglerConfig();
 const url = `${originOf(config, local)}${config.vars?.AUTH_LOGIN_PATH ?? '/login'}/attiva#${token}`;
 const time = new Intl.DateTimeFormat('it-IT', { timeStyle: 'short', timeZone: 'Europe/Rome' }).format(expires);
