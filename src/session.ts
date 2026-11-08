@@ -61,6 +61,11 @@ export async function createSession(env: AuthEnv, config: AuthConfig, email: str
   ]);
   return { token, maxAge };
 }
+/** Metodo d'accesso (passkey o codice) della sessione del token, se ancora valida. */
+export async function sessionMethod(env: AuthEnv, token: string, now = new Date()): Promise<LoginMethod | null> {
+  const row = await env.DB.prepare('SELECT method FROM sessions WHERE id=? AND expires_at>?').bind(await sha256(token), now.toISOString()).first<{ method: LoginMethod }>();
+  return row?.method ?? null;
+}
 /** Email della sessione valida. `last_seen_at` si aggiorna al massimo una volta l'ora, o a ogni richiesta se c'è un limite di inattività. */
 export async function sessionEmail(env: AuthEnv, config: AuthConfig, token: string, now = new Date()): Promise<string | null> {
   const id = await sha256(token);

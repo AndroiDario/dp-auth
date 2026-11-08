@@ -1,11 +1,11 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { authContext, authenticate, sameOrigin, type AuthContext } from './auth.ts';
+import { authContext, authenticate, sameOrigin, sessionAllowed, type AuthContext } from './auth.ts';
 import { codeMinutes, deliverMail, limits, normalizeEmail, overLimit, requestCode, verifyCode } from './code.ts';
 import { accountOf, setPasskeyOnly } from './members.ts';
 import { accountPage, activatePage, loginPage, pageCsp } from './pages.ts';
 import { createLink, endLink, hasPasskey, linkEmail, login, loginOptions, passkeysOf, register, registrationOptions, removePasskey, renamePasskey } from './passkeys.ts';
-import { challengeSeconds, clearCookie, cookie, createSession, endAllSessions, endSession, eventsOf, hmac, logEvent, readCookie, sessionsOf, sha256, tokenPattern } from './session.ts';
+import { challengeSeconds, clearCookie, cookie, cookieNames, createSession, endAllSessions, endSession, eventsOf, hmac, logEvent, readCookie, sessionMethod, sessionsOf, sha256, tokenPattern } from './session.ts';
 import type { AuthConfig, AuthEnv, LoginMethod, Member } from './types.ts';
 
 export type AuthVariables = { member: Member };
@@ -67,6 +67,8 @@ export interface Auth {
    * Va montato prima di `auth.routes`, che sotto /auth/* accetta solo POST.
    */
   acceptDelegate: <E extends AuthEnv>(verify: DelegateVerifier<E>) => (c: Context<{ Bindings: E; Variables: AuthVariables }>) => Promise<Response>;
+  /** Metodo d'accesso della sessione della richiesta: serve al portale per emettere una delega. */
+  loginMethod: (request: Request, env: AuthEnv) => Promise<LoginMethod | null>;
   /** Link di attivazione per un account esistente: da usare da uno script o da una rotta riservata agli owner. */
   activationLink: (env: AuthEnv, origin: string, email: string) => Promise<string | null>;
 }
@@ -244,6 +246,10 @@ export function createAuth(input: AuthConfig): Auth {
     routes: app,
     requireSession,
     acceptDelegate,
+    loginMethod: async (request, env) => {
+      const url = new URL(request.url), token = readCookie(request, cookieNames(config, url.protocol === 'https:').session);
+      return token && sessionAllowed(url, env) ? sessionMethod(env, token) : null;
+    },
     authenticate: (request, env) => authenticate(request, env, config),
     activationLink: async (env, origin, email) => { const token = await createLink(env, email); return token ? `${origin}${config.loginPath}/attiva#${token}` : null; },
   };

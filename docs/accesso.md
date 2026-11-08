@@ -18,6 +18,7 @@ Dopo un accesso con codice senza passkey la pagina Account propone di crearne un
 - **Codice**: `POST /auth/code/request`, poi `POST /auth/code/verify`. La risposta alla richiesta è identica per indirizzi abilitati, sconosciuti e owner. L'invio parte dopo la risposta; per gli indirizzi abilitati l'esito resta in `auth_events` come `code_sent` o `code_failed`, con il motivo del rifiuto di Resend.
 - **Link di attivazione**: `npx dp-auth-link <email>` copia negli appunti un link `/login/attiva#<token>` valido 15 minuti. Nel D1 va solo lo SHA-256 del token. Serve agli owner senza passkey e al recupero dopo la perdita dei dispositivi.
 - **Delega dal portale**: `GET /auth/accept-delegate?code=` con `auth.acceptDelegate(verify)`, montato prima di `auth.routes`. `verify` consuma il codice emesso dal portale (Service Binding RPC) e restituisce email e metodo d'accesso del portale. Si apre una sessione locale con lo stesso metodo solo se l'email ha un ruolo nell'app; chi accede solo con passkey, owner compresi, passa solo se nel portale è entrato con la passkey. In tutti gli altri casi si va a `/login`.
+- Il portale legge il metodo della propria sessione con `auth.loginMethod(request, env)` quando emette il codice.
 - **Uscita**: «Esci da questo dispositivo» chiude la sessione corrente (`POST /auth/logout`). «Esci da tutti i dispositivi» chiude tutte le sessioni dell'account (`DELETE /account/sessions`).
 
 ## Protezioni

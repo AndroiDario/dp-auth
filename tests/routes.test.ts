@@ -162,7 +162,7 @@ describe('Rotte', () => {
     expect(await deliverMail(env, false, 'paola@example.com', message, async () => { throw new TypeError('rete'); })).toEqual({ ok: false, detail: 'errore di rete' });
   });
   it('accetta la delega del portale secondo il ruolo locale e il metodo d’accesso', async () => {
-    const { call, jar, delegated, database } = await setup();
+    const { call, jar, delegated, database, auth, env } = await setup();
     const code = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
     const open = async (n: number) => { jar.clear(); const res = await call(`/auth/accept-delegate?code=${code(n)}&from=famiglia`); return { status: res.status, location: res.headers.get('location'), session: jar.has('__Host-salute_session') }; };
     // Member entrato nel portale con il codice: sessione locale da codice.
@@ -170,6 +170,8 @@ describe('Rotte', () => {
     expect(await open(1)).toEqual({ status: 303, location: '/app', session: true });
     expect(await (await call('/app')).text()).toBe('ciao paola@example.com member');
     expect(database.prepare("SELECT method FROM sessions WHERE email='paola@example.com'").get()).toEqual({ method: 'code' });
+    expect(await auth.loginMethod(new Request(`${origin}/app`, { headers: { cookie: `__Host-salute_session=${jar.get('__Host-salute_session')}` } }), env)).toBe('code');
+    expect(await auth.loginMethod(new Request(`${origin}/app`), env)).toBeNull();
     // Il codice vale una volta sola.
     expect(await open(1)).toEqual({ status: 303, location: '/login', session: false });
     // Owner entrato con il codice: serve la passkey.
