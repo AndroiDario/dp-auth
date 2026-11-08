@@ -92,7 +92,7 @@ export function activatePage(config: AuthConfig, passkeys: boolean): string {
 }
 
 const methods = { passkey: 'passkey', code: 'codice via email' } as const;
-const eventLabels: Record<string, string> = { login: 'Accesso', passkey_added: 'Passkey aggiunta', passkey_removed: 'Passkey rimossa', sessions_ended: 'Uscita da tutti i dispositivi', passkey_only_on: 'Solo passkey attivato', passkey_only_off: 'Solo passkey disattivato', access_granted: 'Accesso concesso', access_revoked: 'Accesso revocato' };
+const eventLabels: Record<string, string> = { login: 'Accesso', code_sent: 'Codice inviato', code_failed: 'Codice non inviato', passkey_added: 'Passkey aggiunta', passkey_removed: 'Passkey rimossa', sessions_ended: 'Uscita da tutti i dispositivi', passkey_only_on: 'Solo passkey attivato', passkey_only_off: 'Solo passkey disattivato', access_granted: 'Accesso concesso', access_revoked: 'Accesso revocato' };
 export interface AccountView { account: Account; passkeys: PasskeyRow[]; sessions: SessionRow[]; events: AuthEvent[]; available: boolean; prompt: boolean; }
 export function accountPage(config: AuthConfig, view: AccountView): string {
   const home = config.home ?? '/';

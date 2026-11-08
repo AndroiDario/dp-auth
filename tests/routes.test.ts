@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
-import { createAuth, type AuthEnv, type AuthVariables } from '../src/index.ts';
-import { addMember } from '../src/members.ts';
+import { createAuth, deliverMail, type AuthEnv, type AuthVariables, type DelegatedLogin } from '../src/index.ts';
+import { addMember, setPasskeyOnly } from '../src/members.ts';
 import { SoftAuthenticator } from './fixtures/authenticator.ts';
 import { testEnv } from './sqlite.ts';
 // Flussi completi attraverso le rotte Hono: codice, passkey, link, account, logout, origine e limiti.
@@ -15,6 +15,9 @@ async function setup() {
   await addMember(env, 'salute', 'paola@example.com', 'member', 'Paola', 'test');
   const auth = createAuth({ app: 'salute', name: 'Salute', home: '/app' });
   const app = new Hono<{ Bindings: AuthEnv; Variables: AuthVariables }>();
+  // Codici di delega del portale finto: si consumano alla prima verifica, come nel Worker famiglia.
+  const delegated = new Map<string, DelegatedLogin>();
+  app.get('/auth/accept-delegate', auth.acceptDelegate(async (_env, code) => { const login = delegated.get(code) ?? null; delegated.delete(code); return login; }));
   app.route('/', auth.routes);
   app.use('*', auth.requireSession());
   app.get('/app', c => c.text(`ciao ${c.var.member.email} ${c.var.member.role}`));
@@ -35,7 +38,7 @@ async function setup() {
     }
     return response;
   };
-  return { env, database, app, auth, call, jar };
+  return { env, database, app, auth, call, jar, delegated };
 }
 
 describe('Rotte', () => {
@@ -140,5 +143,55 @@ describe('Rotte', () => {
     for (let i = 0; i < 25 && status !== 429; i++) status = (await call('/auth/passkey/options', { method: 'POST', ip: '203.0.113.9' })).status;
     expect(status).toBe(429);
     expect((await call('/auth/passkey/options', { method: 'POST', ip: '203.0.113.10' })).status).toBe(200);
+  });
+  it('scrive nel registro l’esito dell’invio del codice, solo per gli indirizzi abilitati', async () => {
+    const { call, database } = await setup();
+    await call('/auth/code/request', { method: 'POST', json: { email: 'paola@example.com' } });
+    await call('/auth/code/request', { method: 'POST', json: { email: 'sconosciuto@example.com' } });
+    // L'invio gira in waitUntil: si attende che il registro lo riporti.
+    const events = async () => { for (let i = 0; i < 50; i++) { const rows = database.prepare("SELECT email,event,detail FROM auth_events WHERE event LIKE 'code_%'").all(); if (rows.length) return rows; await new Promise(r => setTimeout(r, 5)); } return []; };
+    expect(await events()).toEqual([{ email: 'paola@example.com', event: 'code_failed', detail: 'invio non configurato' }]);
+  });
+  it('riporta il motivo del rifiuto di Resend senza indirizzi email', async () => {
+    const { env } = await setup();
+    Object.assign(env, { AUTH_RESEND_KEY: 're_test', AUTH_FROM: 'Salute <accesso@dariopagnoni.it>' });
+    const message = { subject: 'Codice', text: 'Il tuo codice è 123456.' };
+    const refused = await deliverMail(env, false, 'paola@example.com', message, async () => Response.json({ name: 'validation_error', message: 'The dariopagnoni.it domain is not verified. Write to paola@example.com' }, { status: 403 }));
+    expect(refused).toEqual({ ok: false, detail: 'Resend 403 validation_error The dariopagnoni.it domain is not verified. Write to <email>' });
+    expect(await deliverMail(env, false, 'paola@example.com', message, async () => Response.json({ id: 'x' }))).toEqual({ ok: true, detail: null });
+    expect(await deliverMail(env, false, 'paola@example.com', message, async () => { throw new TypeError('rete'); })).toEqual({ ok: false, detail: 'errore di rete' });
+  });
+  it('accetta la delega del portale secondo il ruolo locale e il metodo d’accesso', async () => {
+    const { call, jar, delegated, database } = await setup();
+    const code = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+    const open = async (n: number) => { jar.clear(); const res = await call(`/auth/accept-delegate?code=${code(n)}&from=famiglia`); return { status: res.status, location: res.headers.get('location'), session: jar.has('__Host-salute_session') }; };
+    // Member entrato nel portale con il codice: sessione locale da codice.
+    delegated.set(code(1), { email: 'paola@example.com', method: 'code' });
+    expect(await open(1)).toEqual({ status: 303, location: '/app', session: true });
+    expect(await (await call('/app')).text()).toBe('ciao paola@example.com member');
+    expect(database.prepare("SELECT method FROM sessions WHERE email='paola@example.com'").get()).toEqual({ method: 'code' });
+    // Il codice vale una volta sola.
+    expect(await open(1)).toEqual({ status: 303, location: '/login', session: false });
+    // Owner entrato con il codice: serve la passkey.
+    delegated.set(code(2), { email: 'dario@example.com', method: 'code' });
+    expect(await open(2)).toEqual({ status: 303, location: '/login', session: false });
+    // Owner entrato con la passkey: passa.
+    delegated.set(code(3), { email: 'Dario@Example.com', method: 'passkey' });
+    expect(await open(3)).toEqual({ status: 303, location: '/app', session: true });
+    expect(await (await call('/app')).text()).toBe('ciao dario@example.com owner');
+    // Nessun ruolo in questa app, o codice dal formato sbagliato: login.
+    delegated.set(code(4), { email: 'ospite@example.com', method: 'passkey' });
+    expect(await open(4)).toEqual({ status: 303, location: '/login', session: false });
+    jar.clear();
+    expect((await call('/auth/accept-delegate?code=x')).headers.get('location')).toBe('/login');
+  });
+  it('rifiuta la delega via codice a chi ha scelto «solo passkey»', async () => {
+    const { env, call, delegated, jar, database } = await setup();
+    database.prepare("INSERT INTO passkeys (id,email,public_key,name,created_at) VALUES ('pk','paola@example.com','x','Test','2026-11-01T00:00:00Z')").run();
+    expect(await setPasskeyOnly(env, 'salute', 'paola@example.com', true)).toBe('saved');
+    delegated.set('11111111-1111-4111-8111-111111111111', { email: 'paola@example.com', method: 'code' });
+    const res = await call('/auth/accept-delegate?code=11111111-1111-4111-8111-111111111111');
+    expect(res.headers.get('location')).toBe('/login');
+    expect(jar.has('__Host-salute_session')).toBe(false);
   });
 });

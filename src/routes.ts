@@ -1,12 +1,12 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { authContext, authenticate, sameOrigin, type AuthContext } from './auth.ts';
-import { codeMinutes, limits, normalizeEmail, overLimit, requestCode, sendMail, verifyCode } from './code.ts';
+import { codeMinutes, deliverMail, limits, normalizeEmail, overLimit, requestCode, verifyCode } from './code.ts';
 import { accountOf, setPasskeyOnly } from './members.ts';
 import { accountPage, activatePage, loginPage, pageCsp } from './pages.ts';
 import { createLink, endLink, hasPasskey, linkEmail, login, loginOptions, passkeysOf, register, registrationOptions, removePasskey, renamePasskey } from './passkeys.ts';
-import { challengeSeconds, clearCookie, cookie, createSession, endAllSessions, endSession, eventsOf, hmac, readCookie, sessionsOf, sha256, tokenPattern } from './session.ts';
-import type { AuthConfig, AuthEnv, Member } from './types.ts';
+import { challengeSeconds, clearCookie, cookie, createSession, endAllSessions, endSession, eventsOf, hmac, logEvent, readCookie, sessionsOf, sha256, tokenPattern } from './session.ts';
+import type { AuthConfig, AuthEnv, LoginMethod, Member } from './types.ts';
 
 export type AuthVariables = { member: Member };
 export type AuthApp = Hono<{ Bindings: AuthEnv; Variables: AuthVariables }>;
@@ -46,6 +46,12 @@ function waitUntil(c: Ctx, work: Promise<unknown>): void {
   try { c.executionCtx.waitUntil(work); } catch { void work; }
 }
 
+/** Accesso già verificato da un altro servizio (il portale famiglia): chi è entrato e come. */
+export interface DelegatedLogin { email: string; method: LoginMethod; }
+/** Verifica e consuma un codice di delega, di solito via Service Binding RPC verso il portale. null se non vale. */
+export type DelegateVerifier<E extends AuthEnv> = (env: E, code: string) => Promise<DelegatedLogin | null>;
+const delegatePattern = /^[A-Za-z0-9-]{16,64}$/;
+
 export interface Auth {
   config: Required<Pick<AuthConfig, 'home' | 'loginPath' | 'accountPath'>> & AuthConfig;
   /** Rotte pubbliche e di account: `app.route('/', auth.routes)` prima delle rotte protette. */
@@ -54,6 +60,13 @@ export interface Auth {
   requireSession: () => MiddlewareHandler<{ Bindings: AuthEnv; Variables: AuthVariables }>;
   /** Membro della richiesta o null, per usi fuori da Hono (per esempio il controllo degli asset statici). */
   authenticate: (request: Request, env: AuthEnv) => Promise<Member | null>;
+  /**
+   * Handler GET per `/auth/accept-delegate?code=`: apre una sessione locale per chi è già entrato nel portale.
+   * Vale solo per chi ha un ruolo in questa app. Chi accede solo con passkey (owner compresi) passa solo se nel portale
+   * è entrato con la passkey; altrimenti, come ogni codice non valido, finisce sulla pagina di login.
+   * Va montato prima di `auth.routes`, che sotto /auth/* accetta solo POST.
+   */
+  acceptDelegate: <E extends AuthEnv>(verify: DelegateVerifier<E>) => (c: Context<{ Bindings: E; Variables: AuthVariables }>) => Promise<Response>;
   /** Link di attivazione per un account esistente: da usare da uno script o da una rotta riservata agli owner. */
   activationLink: (env: AuthEnv, origin: string, email: string) => Promise<string | null>;
 }
@@ -103,7 +116,8 @@ export function createAuth(input: AuthConfig): Auth {
     if (!email) return fail('Indirizzo email non valido.');
     if (await overLimit(c.env, `code|${(await hmac(auth.secret!, email)).slice(0, 32)}`, limits.code, 'hour')) return fail('Troppi codici richiesti per questo indirizzo. Riprova tra un’ora.', 429);
     const { id, message } = await requestCode(c.env, config, new URL(c.req.url).origin, email, auth.secret!);
-    if (message) waitUntil(c, sendMail(c.env, auth.local, email, message));
+    // L'esito resta nel registro solo per gli indirizzi abilitati: la risposta è la stessa per tutti.
+    if (message) waitUntil(c, deliverMail(c.env, auth.local, email, message).then(result => logEvent(c.env, email, result.ok ? 'code_sent' : 'code_failed', result.detail)).catch(() => {}));
     return withCookies({ ok: true }, [cookie(auth.names.code, id, codeMinutes * 60, auth.secure)]);
   });
   app.post('/auth/code/verify', async c => {
@@ -209,10 +223,27 @@ export function createAuth(input: AuthConfig): Auth {
     return withCookies({ next: config.loginPath }, [clearCookie(auth.names.session, auth.secure)]);
   });
 
+  const acceptDelegate = <E extends AuthEnv>(verify: DelegateVerifier<E>) => async (c: Context<{ Bindings: E; Variables: AuthVariables }>): Promise<Response> => {
+    const auth = authContext(new URL(c.req.url), c.env, config);
+    const toLogin = () => c.redirect(config.loginPath, 303);
+    if (!auth.allowed || !auth.secret || await ipLimited(c.req.raw, c.env, auth.secret)) return toLogin();
+    const code = c.req.query('code');
+    if (!code || !delegatePattern.test(code)) return toLogin();
+    const delegated = await verify(c.env, code).catch(() => null);
+    const email = delegated && (delegated.method === 'passkey' || delegated.method === 'code') ? normalizeEmail(delegated.email) : null;
+    const account = email ? await accountOf(c.env, config.app, email) : null;
+    if (!delegated || !account || (account.passkeyOnly && delegated.method !== 'passkey')) return toLogin();
+    const session = await createSession(c.env, config, account.email, delegated.method);
+    const headers = new Headers({ Location: config.home });
+    headers.append('Set-Cookie', cookie(auth.names.session, session.token, session.maxAge, auth.secure));
+    return new Response(null, { status: 303, headers });
+  };
+
   return {
     config,
     routes: app,
     requireSession,
+    acceptDelegate,
     authenticate: (request, env) => authenticate(request, env, config),
     activationLink: async (env, origin, email) => { const token = await createLink(env, email); return token ? `${origin}${config.loginPath}/attiva#${token}` : null; },
   };

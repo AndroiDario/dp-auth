@@ -57,12 +57,14 @@ export async function verifyCode(env: AuthEnv, config: AuthConfig, id: string, c
   return await codeAllowed(env, config.app, row.email) ? row.email : null;
 }
 
+/** Esito dell'invio: ok, oppure il motivo del rifiuto senza indirizzi email. Finisce nel registro come code_sent o code_failed. */
+export type MailResult = { ok: true; detail: string | null } | { ok: false; detail: string };
 /** Invio con la chiave Resend. In locale senza chiave il messaggio resta in auth_outbox per bin/local-code.mjs. */
-export async function sendMail(env: AuthEnv, local: boolean, to: string, message: { subject: string; text: string }, transport: typeof fetch = fetch): Promise<boolean> {
+export async function deliverMail(env: AuthEnv, local: boolean, to: string, message: { subject: string; text: string }, transport: typeof fetch = fetch): Promise<MailResult> {
   if (!env.AUTH_RESEND_KEY || !env.AUTH_FROM) {
-    if (!local) { console.error('Email di accesso non configurata'); return false; }
+    if (!local) { console.error('Email di accesso non configurata'); return { ok: false, detail: 'invio non configurato' }; }
     await env.DB.prepare('INSERT INTO auth_outbox (email,text,created_at) VALUES (?,?,?)').bind(to, message.text, new Date().toISOString()).run();
-    return true;
+    return { ok: true, detail: 'locale' };
   }
   try {
     const response = await transport('https://api.resend.com/emails', {
@@ -72,9 +74,16 @@ export async function sendMail(env: AuthEnv, local: boolean, to: string, message
     });
     if (!response.ok) {
       const error = await response.json().catch(() => null) as { name?: string; message?: string } | null;
-      console.error('Email di accesso non inviata', response.status, error?.name ?? '', (error?.message ?? '').replace(/[^\s@()<>]+@[^\s@()<>]+/g, '<email>').slice(0, 200));
-      return false;
+      const reason = (error?.message ?? '').replace(/[^\s@()<>]+@[^\s@()<>]+/g, '<email>').slice(0, 200);
+      console.error('Email di accesso non inviata', response.status, error?.name ?? '', reason);
+      return { ok: false, detail: `Resend ${response.status} ${error?.name ?? ''} ${reason}`.replace(/\s+/g, ' ').trim() };
     }
-    return true;
-  } catch { console.error('Email di accesso non inviata'); return false; }
+    return { ok: true, detail: null };
+  } catch (reason) {
+    console.error('Email di accesso non inviata');
+    return { ok: false, detail: reason instanceof DOMException && reason.name === 'TimeoutError' ? 'Resend non risponde' : 'errore di rete' };
+  }
+}
+export async function sendMail(env: AuthEnv, local: boolean, to: string, message: { subject: string; text: string }, transport: typeof fetch = fetch): Promise<boolean> {
+  return (await deliverMail(env, local, to, message, transport)).ok;
 }
