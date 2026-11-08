@@ -17,7 +17,9 @@ async function setup() {
   const app = new Hono<{ Bindings: AuthEnv; Variables: AuthVariables }>();
   // Codici di delega del portale finto: si consumano alla prima verifica, come nel Worker famiglia.
   const delegated = new Map<string, DelegatedLogin>();
-  app.get('/auth/accept-delegate', auth.acceptDelegate(async (_env, code) => { const login = delegated.get(code) ?? null; delegated.delete(code); return login; }));
+  const verify = async (_env: AuthEnv, code: string) => { const login = delegated.get(code) ?? null; delegated.delete(code); return login; };
+  app.get('/auth/accept-delegate', auth.acceptDelegate(verify));
+  app.get('/auth/accept-delegate-owners', auth.acceptDelegate(verify, { ownersByCode: true }));
   app.route('/', auth.routes);
   app.use('*', auth.requireSession());
   app.get('/app', c => c.text(`ciao ${c.var.member.email} ${c.var.member.role}`));
@@ -195,5 +197,26 @@ describe('Rotte', () => {
     const res = await call('/auth/accept-delegate?code=11111111-1111-4111-8111-111111111111');
     expect(res.headers.get('location')).toBe('/login');
     expect(jar.has('__Host-salute_session')).toBe(false);
+  });
+  it('con ownersByCode la delega da codice apre la sessione anche agli owner, non a chi ha scelto «solo passkey»', async () => {
+    const { env, call, jar, delegated, database } = await setup();
+    delegated.set('22222222-2222-4222-8222-222222222222', { email: 'dario@example.com', method: 'code' });
+    const res = await call('/auth/accept-delegate-owners?code=22222222-2222-4222-8222-222222222222');
+    expect(res.headers.get('location')).toBe('/app');
+    expect(await (await call('/app')).text()).toBe('ciao dario@example.com owner');
+    expect(database.prepare("SELECT method FROM sessions WHERE email='dario@example.com'").get()).toEqual({ method: 'code' });
+    jar.clear();
+    database.prepare("INSERT INTO passkeys (id,email,public_key,name,created_at) VALUES ('pk','paola@example.com','x','Test','2026-11-01T00:00:00Z')").run();
+    expect(await setPasskeyOnly(env, 'salute', 'paola@example.com', true)).toBe('saved');
+    delegated.set('33333333-3333-4333-8333-333333333333', { email: 'paola@example.com', method: 'code' });
+    expect((await call('/auth/accept-delegate-owners?code=33333333-3333-4333-8333-333333333333')).headers.get('location')).toBe('/login');
+  });
+  it('mostra il link al portale nella pagina di login quando è configurato', async () => {
+    const { env } = await setup();
+    const portal = createAuth({ app: 'salute', name: 'Salute', portal: { name: 'Famiglia', url: 'https://famiglia.dariopagnoni.it' } });
+    const page = await (await portal.routes.request(`${origin}/login`, {}, env)).text();
+    expect(page).toContain('<a href="https://famiglia.dariopagnoni.it">Entra da Famiglia</a> con il codice via email.');
+    const plain = await (await createAuth({ app: 'salute', name: 'Salute' }).routes.request(`${origin}/login`, {}, env)).text();
+    expect(plain).not.toContain('Entra da');
   });
 });

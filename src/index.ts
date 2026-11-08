@@ -1,4 +1,4 @@
-export { createAuth, securityHeaders, type Auth, type AuthApp, type AuthVariables, type DelegatedLogin, type DelegateVerifier } from './routes.ts';
+export { createAuth, securityHeaders, type Auth, type AuthApp, type AuthVariables, type DelegatedLogin, type DelegateOptions, type DelegateVerifier } from './routes.ts';
 export type { AuthConfig, AuthEnv, Member, Role, LoginMethod, RelyingParty } from './types.ts';
 export { authenticate, authContext, isLocal, relyingParty, sameOrigin, sessionAllowed } from './auth.ts';
 export { accountOf, addMember, codeAllowed, memberOf, membersOf, removeMember, setPasskeyOnly, roles, isRole, type Account } from './members.ts';

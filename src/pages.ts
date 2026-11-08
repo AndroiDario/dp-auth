@@ -77,6 +77,7 @@ export function loginPage(config: AuthConfig, passkeys: boolean, codeMinutes: nu
   <button class="button primary" type="submit">Accedi</button>
   <button class="text-button" type="button" id="code-back">Usa un altro indirizzo</button>
 </form>
+${config.portal ? `<p class="hint">Nessuna passkey su questo dispositivo? <a href="${escape(config.portal.url)}">Entra da ${escape(config.portal.name)}</a> con il codice via email.</p>` : ''}
 <p id="auth-error" role="alert"></p>
 <p class="foot">${escape(local ? (passkeys ? 'Ambiente locale' : 'Ambiente locale · passkey disponibili su localhost') : config.footer ?? 'Accesso riservato.')}</p>`;
   return shell({ config, title: 'Accesso', page: 'login', body, attributes: ` data-passkeys="${passkeys}"` });

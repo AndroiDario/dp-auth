@@ -39,6 +39,8 @@ export interface AuthConfig {
   footer?: string;
   /** Durata delle sessioni in giorni per metodo. Predefinito 30 con passkey e 7 con codice. */
   sessionDays?: Partial<Record<LoginMethod, number>>;
+  /** Portale da cui si entra anche con il codice via email: la pagina di login ne mostra il link. */
+  portal?: { name: string; url: string };
   /** Minuti di inattività dopo i quali la sessione scade. Senza valore vale solo la durata assoluta. */
   idleMinutes?: number;
 }

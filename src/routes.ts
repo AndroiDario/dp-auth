@@ -51,6 +51,10 @@ export interface DelegatedLogin { email: string; method: LoginMethod; }
 /** Verifica e consuma un codice di delega, di solito via Service Binding RPC verso il portale. null se non vale. */
 export type DelegateVerifier<E extends AuthEnv> = (env: E, code: string) => Promise<DelegatedLogin | null>;
 const delegatePattern = /^[A-Za-z0-9-]{16,64}$/;
+export interface DelegateOptions {
+  /** Una delega da codice apre la sessione anche agli owner. Resta fuori solo chi ha scelto «Accedi solo con passkey». */
+  ownersByCode?: boolean;
+}
 
 export interface Auth {
   config: Required<Pick<AuthConfig, 'home' | 'loginPath' | 'accountPath'>> & AuthConfig;
@@ -63,10 +67,10 @@ export interface Auth {
   /**
    * Handler GET per `/auth/accept-delegate?code=`: apre una sessione locale per chi è già entrato nel portale.
    * Vale solo per chi ha un ruolo in questa app. Chi accede solo con passkey (owner compresi) passa solo se nel portale
-   * è entrato con la passkey; altrimenti, come ogni codice non valido, finisce sulla pagina di login.
+   * è entrato con la passkey; con `ownersByCode` gli owner passano anche con il codice. Ogni altro caso va al login.
    * Va montato prima di `auth.routes`, che sotto /auth/* accetta solo POST.
    */
-  acceptDelegate: <E extends AuthEnv>(verify: DelegateVerifier<E>) => (c: Context<{ Bindings: E; Variables: AuthVariables }>) => Promise<Response>;
+  acceptDelegate: <E extends AuthEnv>(verify: DelegateVerifier<E>, options?: DelegateOptions) => (c: Context<{ Bindings: E; Variables: AuthVariables }>) => Promise<Response>;
   /** Metodo d'accesso della sessione della richiesta: serve al portale per emettere una delega. */
   loginMethod: (request: Request, env: AuthEnv) => Promise<LoginMethod | null>;
   /** Link di attivazione per un account esistente: da usare da uno script o da una rotta riservata agli owner. */
@@ -225,7 +229,7 @@ export function createAuth(input: AuthConfig): Auth {
     return withCookies({ next: config.loginPath }, [clearCookie(auth.names.session, auth.secure)]);
   });
 
-  const acceptDelegate = <E extends AuthEnv>(verify: DelegateVerifier<E>) => async (c: Context<{ Bindings: E; Variables: AuthVariables }>): Promise<Response> => {
+  const acceptDelegate = <E extends AuthEnv>(verify: DelegateVerifier<E>, options: DelegateOptions = {}) => async (c: Context<{ Bindings: E; Variables: AuthVariables }>): Promise<Response> => {
     const auth = authContext(new URL(c.req.url), c.env, config);
     const toLogin = () => c.redirect(config.loginPath, 303);
     if (!auth.allowed || !auth.secret || await ipLimited(c.req.raw, c.env, auth.secret)) return toLogin();
@@ -234,7 +238,8 @@ export function createAuth(input: AuthConfig): Auth {
     const delegated = await verify(c.env, code).catch(() => null);
     const email = delegated && (delegated.method === 'passkey' || delegated.method === 'code') ? normalizeEmail(delegated.email) : null;
     const account = email ? await accountOf(c.env, config.app, email) : null;
-    if (!delegated || !account || (account.passkeyOnly && delegated.method !== 'passkey')) return toLogin();
+    const passkeyOnly = account ? (account.owner && options.ownersByCode ? Boolean(account.ownPasskeyOnly) : account.passkeyOnly) : true;
+    if (!delegated || !account || (passkeyOnly && delegated.method !== 'passkey')) return toLogin();
     const session = await createSession(c.env, config, account.email, delegated.method);
     const headers = new Headers({ Location: config.home });
     headers.append('Set-Cookie', cookie(auth.names.session, session.token, session.maxAge, auth.secure));

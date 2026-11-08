@@ -40,12 +40,18 @@ export async function removeMember(env: AuthEnv, app: string, email: string, act
 }
 
 /** `passkeyOnly`: owner, oppure opzione attiva. Accede solo con passkey. */
-export interface Account { email: string; role: Role; name: string | null; owner: boolean; passkeyOnly: boolean; }
+export interface Account {
+  email: string; role: Role; name: string | null; owner: boolean;
+  /** Vale sempre per gli owner. */
+  passkeyOnly: boolean;
+  /** La scelta «Accedi solo con passkey» della persona, a prescindere dal ruolo. */
+  ownPasskeyOnly: boolean;
+}
 export async function accountOf(env: AuthEnv, app: string, email: string): Promise<Account | null> {
   const row = await env.DB.prepare('SELECT u.email, u.passkey_only, m.role, m.name FROM users u JOIN members m ON m.email=u.email AND m.app=? WHERE u.email=?').bind(app, email).first<{ email: string; passkey_only: number; role: Role; name: string | null }>();
   if (!row) return null;
   const owner = row.role === 'owner';
-  return { email: row.email, role: row.role, name: row.name, owner, passkeyOnly: owner || Boolean(row.passkey_only) };
+  return { email: row.email, role: row.role, name: row.name, owner, passkeyOnly: owner || Boolean(row.passkey_only), ownPasskeyOnly: Boolean(row.passkey_only) };
 }
 /** Il codice via email vale per member e viewer senza l'opzione «solo passkey». */
 export async function codeAllowed(env: AuthEnv, app: string, email: string): Promise<boolean> {
